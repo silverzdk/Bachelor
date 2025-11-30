@@ -28,14 +28,22 @@ class Fluid(pf.Fluid):
         if type == 'external':
             self.characteristic_length = Geometry.outer_diameter
 
+    
+    def with_state(self,Input1,Input2):
+        '''Returns a new Fluid object with the specified state'''
+        new_fluid = Fluid(self.name, self.m_dot)
+        new_fluid.set_geometry(self.Geometry, self.flow_type)
+        new_fluid.update(Input1, Input2)
+        return new_fluid
+    
     def liquid_phase(self):
         '''Returns a new Fluid object in the liquid phase at the current pressure'''
         if self.phase.name != "TwoPhase":
             raise ValueError("Fluid is not in a two-phase state.")
         
         liquid_phase = Fluid(self.name, self.m_dot)
-        liquid_phase.update(pf.Input.quality(0), pf.Input.pressure(self.pressure))
-        liquid_phase.set_geometry(self.Geometry)
+        liquid_phase.set_geometry(self.Geometry, self.flow_type)
+        liquid_phase.update(Input.quality(0), Input.pressure(self.pressure))
         return liquid_phase
     
     # Returns a new Fluid object in the vapor phase at the current pressure
@@ -45,7 +53,7 @@ class Fluid(pf.Fluid):
             raise ValueError("Fluid is not in a two-phase state.")
         
         vapor_phase = Fluid(self.name, self.m_dot)
-        vapor_phase.update(pf.Input.quality(1), pf.Input.pressure(self.pressure))
+        vapor_phase.update(Input.quality(1), Input.pressure(self.pressure))
         vapor_phase.set_geometry(self.Geometry)
         return vapor_phase
     
@@ -73,9 +81,9 @@ class Fluid(pf.Fluid):
             if self.Geometry.arrangement == "Inline":
                 V_max = V* (self.Geometry.transverse_pitch / (self.Geometry.transverse_pitch - self.Geometry.outer_diameter))
             elif self.Geometry.arrangement == "Staggered":
-                V_max = V* (self.Geometry.transverse_pitch/ (self.Geometry.diagonal_pitch - self.Geometry.outer_diameter))
+                V_max = V* (self.Geometry.transverse_pitch/ 2*(self.Geometry.diagonal_pitch - self.Geometry.outer_diameter))
         
-        #-- UNFINISHED EXTERNAL FLOW CALCULATION --#
+            Re = V_max  * self.Geometry.outer_diameter / self.nu
             
         else :
             raise ValueError("Invalid flow type. Use 'internal' or 'external'.")
@@ -88,7 +96,9 @@ class Fluid(pf.Fluid):
     # Add alias methods for commonly used properties
     # For creating alias properties
     def alias_property(original_name):
-        return property(lambda self: getattr(self, original_name))
+        return property(lambda self: getattr(self, original_name),  # Getter
+                        lambda self, value: setattr(self, original_name, value) # Setter
+                        )
 
     k = alias_property("conductivity")
     H = alias_property("enthalpy")
@@ -126,15 +136,15 @@ class Geometry:
         self.duct_area       = self.width * self.length
 
 class Node:
-    def __init__(self,pipe,x_pos,T_hot_init,T_cold_init,P_hot_init,P_cold_init,m_dot_hot,m_dot_cold,is_boundary=False):
-        self.Pipe           = pipe
+    def __init__(self,Geometry,x_pos,T_hot_init,T_cold_init,P_hot_init,P_cold_init,m_dot_hot,m_dot_cold,is_boundary=False):
+        self.Geometry           = Geometry
         self.is_boundary    = is_boundary
         self.x_pos          = x_pos
 
         # Hot fluid
         self.Fluid_hot = Fluid(FluidsList.Water, m_dot_hot)
         self.Fluid_hot.update(Input.temperature(T_hot_init), Input.pressure(P_hot_init))
-        self.Fluid_hot.set_geometry(self.Pipe)
+        self.Fluid_hot.set_geometry(self.Geometry)
 
         # Cold fluid
         self.Fluid_cold = Fluid(FluidsList.Air, m_dot_cold)
@@ -148,18 +158,20 @@ class Node:
         h_hL = (0.023*liquid_phase.Re_D**(0.8)*liquid_phase.Pr**(0.4)*liquid_phase.k)/self.inner_diameter        
         self.h_h = h_hL*((1-self.Fluid_hot.quality)**0.8+(3.8*self.Fluid_hot.quality**0.7 *(1-self.Fluid_hot.quality)**0.04)/(self.Fluid_hot.Pr**0.38))
 
-    # For first row pipes
-    def __outer_convective_HTC_row1__(self):
+    def __outer_convective_HTC__(self):
         # Kapitel 7-4 i bogen s. 493 pdf Heat and mass transfer - Fundamentals and applications 
+        
+        pr_s = self.Fluid_cold.with_state(Input.temperature(self.Fluid_hot.temperature), Input.pressure(self.Fluid_cold.pressure)).Pr
+        pr = self.Fluid_cold.Pr
+        
+        print(f"Pr_s: {pr_s}, Pr: {pr}")
+        
+         # Nusselt number for flow across tube banks
+        
         Nu_D = 0.3 + (
             0.62*self.Fluid_cold.Re_D**(1/2)*self.Fluid_cold.Pr**(1/3))/((1+(0.4/self.Fluid_cold.Pr)**(2/3))**(1/4)) * ((1+(self.Fluid_cold.Re_D)/282000)**(5/8))**(4/5)
         self.h_c    = (Nu_D*self.Fluid_cold.k)/self.outer_diameter
-
-    # For all downstream pipes
-    def __outer_convective_HTC_downstream__(self):
-        pass
-
-
+        
     def __inner_overall_HTC__(self):
 
         self.U_i = (1/(self.h_c) + 1/(self.h_h)  )**-1 
