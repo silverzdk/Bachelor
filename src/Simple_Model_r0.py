@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import pyfluids as pf
 from pyfluids import FluidsList, Input
 
-
 # Fluid class that extends pyfluids.Fluid
 class Fluid(pf.Fluid):
     def __init__(self,fluid_type,mass_flow_rate=None):
@@ -13,7 +12,7 @@ class Fluid(pf.Fluid):
         super().__init__(fluid_type)
         self.Geometry = None
         self.mass_flow_rate = mass_flow_rate
-    
+        
     def set_geometry(self,Geometry,type='internal'):
         '''Sets the geometry of the heat exchanger for flow calculations
         args:
@@ -27,7 +26,6 @@ class Fluid(pf.Fluid):
             self.characteristic_length = Geometry.inner_diameter
         if type == 'external':
             self.characteristic_length = Geometry.outer_diameter
-
     
     def with_state(self,Input1,Input2):
         '''Returns a new Fluid object with the specified state'''
@@ -54,7 +52,7 @@ class Fluid(pf.Fluid):
         
         vapor_phase = Fluid(self.name, self.m_dot)
         vapor_phase.update(Input.quality(1), Input.pressure(self.pressure))
-        vapor_phase.set_geometry(self.Geometry)
+        vapor_phase.set_geometry(self.Geometry,self.flow_type)
         return vapor_phase
     
     def __repr__(self):
@@ -71,28 +69,20 @@ class Fluid(pf.Fluid):
         
         # Calculate based on flow type
         if self.flow_type == 'internal':
-            
-            u = self.m_dot / (self.density * (np.pi * (self.Geometry.inner_diameter / 2)**2))
-            Re = (self.density * u * self.Geometry.inner_diameter) / self.dynamic_viscosity
+
+            A = (np.pi*self.Geometry.inner_diameter**2)/4
+            u = self.m_dot / (self.density * A)
+            Re = (self.density * self.Geometry.inner_diameter*u)/(self.dynamic_viscosity)
             
         elif self.flow_type == 'external':
-            V = self.m_dot / (self.density * self.Geometry.duct_area)
-            
-            if self.Geometry.arrangement == "Inline":
-                V_max = V* (self.Geometry.transverse_pitch / (self.Geometry.transverse_pitch - self.Geometry.outer_diameter))
-            elif self.Geometry.arrangement == "Staggered":
-                V_max = V* (self.Geometry.transverse_pitch/ 2*(self.Geometry.diagonal_pitch - self.Geometry.outer_diameter))
+            u = self.m_dot / (self.density * self.Geometry.duct_area)
         
-            Re = V_max  * self.Geometry.outer_diameter / self.nu
+            Re = u  * self.Geometry.outer_diameter / self.kinematic_viscosity
             
         else :
             raise ValueError("Invalid flow type. Use 'internal' or 'external'.")
         return Re
-    
-    @property
-    def nu(self):
-        return self.dynamic_viscosity / self.density
-    
+        
     # Add alias methods for commonly used properties
     # For creating alias properties
     def alias_property(original_name):
@@ -136,47 +126,94 @@ class Geometry:
         self.duct_area       = self.width * self.length
 
 class Node:
-    def __init__(self,Geometry,x_pos,T_hot_init,T_cold_init,P_hot_init,P_cold_init,m_dot_hot,m_dot_cold,is_boundary=False):
-        self.Geometry           = Geometry
-        self.is_boundary    = is_boundary
-        self.x_pos          = x_pos
+    def __init__(self,Geometry,x_pos,node_length,T_hot_init,T_cold_init,P_hot_init,P_cold_init,m_dot_hot,m_dot_cold,is_boundary=False):
+        self.Geometry = Geometry
+        self.is_boundary = is_boundary
+        self.x_pos = x_pos
+        self.node_length = node_length
 
         # Hot fluid
         self.Fluid_hot = Fluid(FluidsList.Water, m_dot_hot)
         self.Fluid_hot.update(Input.temperature(T_hot_init), Input.pressure(P_hot_init))
-        self.Fluid_hot.set_geometry(self.Geometry)
+        self.Fluid_hot.set_geometry(self.Geometry,type='internal')
 
         # Cold fluid
         self.Fluid_cold = Fluid(FluidsList.Air, m_dot_cold)
         self.Fluid_cold.update(Input.temperature(T_cold_init),Input.pressure(P_cold_init))
+        self.Fluid_cold.set_geometry(self.Geometry, type='external')
 
     def __inner_convective_HTC__(self):
         
-        # Shah correlation for boiling inside tubes
-        liquid_phase = self.Fluid_hot.liquid_phase()
-        
-        h_hL = (0.023*liquid_phase.Re_D**(0.8)*liquid_phase.Pr**(0.4)*liquid_phase.k)/self.inner_diameter        
-        self.h_h = h_hL*((1-self.Fluid_hot.quality)**0.8+(3.8*self.Fluid_hot.quality**0.7 *(1-self.Fluid_hot.quality)**0.04)/(self.Fluid_hot.Pr**0.38))
+        # If not two-phase
+        if self.Fluid_hot.phase.name != "TwoPhase":
+            NotImplementedError("Single phase heat transfer not implemented yet.")
+            self.h_h = -np.ln((-Tmx + T_s)/(-Tm_in + T_s))*m_dot*c_P/(P*x)
+        else:
+           # Shah correlation for boiling inside tubes
+           liquid_phase = self.Fluid_hot.liquid_phase()
 
-    def __outer_convective_HTC__(self):
-        # Kapitel 7-4 i bogen s. 493 pdf Heat and mass transfer - Fundamentals and applications 
-        
-        pr_s = self.Fluid_cold.with_state(Input.temperature(self.Fluid_hot.temperature), Input.pressure(self.Fluid_cold.pressure)).Pr
-        pr = self.Fluid_cold.Pr
-        
-        print(f"Pr_s: {pr_s}, Pr: {pr}")
-        
-         # Nusselt number for flow across tube banks
-        
+           # Shah 1979 eq 5
+           h_L = (0.023*liquid_phase.Re**(0.8)*liquid_phase.Pr**(0.4)*liquid_phase.k)/self.Geometry.inner_diameter
+           
+           x = self.Fluid_hot.quality
+           
+           # Shah 1979 eq 8
+           h_TP = h_L * ((1-x)**0.8 + (3.8*x**0.76 * (1-x)**0.04)/(self.Fluid_hot.Pr**0.38))
+           self.h_h = h_TP
+           
+    def __outer_convective_HTC__(self):        
         Nu_D = 0.3 + (
-            0.62*self.Fluid_cold.Re_D**(1/2)*self.Fluid_cold.Pr**(1/3))/((1+(0.4/self.Fluid_cold.Pr)**(2/3))**(1/4)) * ((1+(self.Fluid_cold.Re_D)/282000)**(5/8))**(4/5)
-        self.h_c    = (Nu_D*self.Fluid_cold.k)/self.outer_diameter
-        
-    def __inner_overall_HTC__(self):
-
-        self.U_i = (1/(self.h_c) + 1/(self.h_h)  )**-1 
+            0.62*self.Fluid_cold.Re**(1/2)*self.Fluid_cold.Pr**(1/3))/((1+(0.4/self.Fluid_cold.Pr)**(2/3))**(1/4)) * ((1+(self.Fluid_cold.Re)/282000)**(5/8))**(4/5)
+        self.h_c    = (Nu_D*self.Fluid_cold.k)/self.Geometry.outer_diameter
 
     def overall_HTC(self):
         self.__inner_convective_HTC__()
         self.__outer_convective_HTC__()
-        self.__inner_overall_HTC__()
+        
+        # Inner overall heat transfer coefficient 
+        # From heat transfer in single and multiphase systems (10.69) p. 495
+        U_i = np.abs(np.pow((1/self.h_c + self.Geometry.inner_diameter/(self.Geometry.outer_diameter*self.h_h)),-1))
+            
+        inner_area = self.Geometry.inner_perimeter * self.node_length
+        Delta_H =( U_i * inner_area )/self.Fluid_cold.m_dot * (self.Fluid_hot.temperature - self.Fluid_cold.temperature)
+        
+        return Delta_H
+        
+        
+    def pressure_drop(self):
+        pass
+    
+    
+if __name__ == "__main__":
+    geom = Geometry(
+    # Height and length of the heat exchanger
+    width=1,
+    length=1,
+    # Pipe dimensions
+    pipe_outer_diameter=0.0603, 
+    pipe_wall_thickness=0.005,
+    # Arrengement dimensions
+    arrangement="Inline", 
+    transverse_pitch=0.04, 
+    longitudinal_pitch=0.04
+    )
+
+    node1 = Node(
+        Geometry=geom,
+        x_pos=0,
+        node_length=0.1, #m
+        T_hot_init=343, # C 
+        T_cold_init=200, # C 
+        P_hot_init=158e5, # Pa
+        P_cold_init=1e5, # Pa
+        m_dot_hot=6, # kg/s
+        m_dot_cold=50, # kg/s
+        is_boundary=True
+    )
+
+
+    node1.Fluid_hot.update(Input.pressure(158e5), Input.enthalpy(node1.Fluid_hot.dew_point_at_pressure(158e5).enthalpy-1000))
+    
+    Delta_H = node1.overall_HTC()
+    print(Delta_H)
+    
