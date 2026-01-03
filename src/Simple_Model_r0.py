@@ -37,7 +37,7 @@ class Fluid(pf.Fluid):
     def liquid_phase(self):
         '''Returns a new Fluid object in the liquid phase at the current pressure'''
         if self.phase.name != "TwoPhase":
-            raise ValueError("Fluid is not in a two-phase state.")
+            raise ValueError(f"{self} is not in a two-phase state.") 
 
         liquid_phase = Fluid(self.name, self.m_dot)
         liquid_phase.set_geometry(self.Geometry, self.flow_type)
@@ -49,7 +49,7 @@ class Fluid(pf.Fluid):
     def vapor_phase(self):
         '''Returns a new Fluid object in the vapor phase at the current pressure'''
         if self.phase.name != "TwoPhase":
-            raise ValueError("Fluid is not in a two-phase state.")
+            raise ValueError(f"{self} is not in a two-phase state.") 
         
         vapor_phase = Fluid(self.name, self.m_dot)
         vapor_phase.set_geometry(self.Geometry,self.flow_type)        
